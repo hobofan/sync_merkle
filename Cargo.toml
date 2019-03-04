@@ -1,0 +1,17 @@
+[package]
+name = "sync_merkle"
+version = "0.1.0"
+authors = ["Maximilian Goisser <goisser94@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+merkle_light = "0.3.1"
+trie-db = "0.11.0"
+memory-db = "0.11.0"
+hash-db = "0.11.0"
+keccak-hasher = "0.11.0"
+reference-trie = "0.11.0"
+
+[dev-dependencies]
+tiny-keccak = "1.4.2"
+rustc-hex = "2.0.1"
