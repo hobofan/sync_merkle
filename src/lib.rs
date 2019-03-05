@@ -45,7 +45,7 @@ impl<'a, 'b> NodeDiff<'a, 'b> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct NodeDiffOwned {
     added_entries: Vec<EntryOwned>,
     removed_entries: Vec<EntryOwned>,
@@ -90,13 +90,13 @@ impl<'a, 'b> From<Entry<'a, 'b>> for EntryOwned {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EntryOwned {
     key: NibbleOwned,
     value: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NibbleOwned {
     pub inner: Vec<u8>,
 }
@@ -199,6 +199,14 @@ mod tests {
 
         let diff = crate::merkle_diff::<ReferenceNodeCodec, _, _, _>(&memdb, &old_root, &new_root);
         assert!(!diff.is_empty());
+        assert_eq!(1, diff[0].added_entries.len());
+        assert_eq!(
+            crate::EntryOwned {
+                key: crate::NibbleOwned { inner: vec![] },
+                value: b"baz".to_vec()
+            },
+            diff[0].added_entries[0]
+        );
     }
 
     #[test]
