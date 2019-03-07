@@ -1,8 +1,10 @@
+mod encoding;
+mod types;
+
 use trie_db::node::Node;
-use trie_db::HashDB;
-use trie_db::Hasher;
-use trie_db::NibbleSlice;
-use trie_db::NodeCodec;
+use trie_db::{HashDB, Hasher, NibbleSlice, NodeCodec};
+
+use types::{Entry, NodeDiff, NodeDiffOwned};
 
 pub fn merkle_diff<
     'a,
@@ -33,100 +35,102 @@ pub fn merkle_diff<
         .collect()
 }
 
-#[derive(Debug)]
-pub struct NodeDiff<'a, 'b> {
-    added_entries: Vec<Entry<'a, 'b>>,
-    removed_entries: Vec<Entry<'a, 'b>>,
-}
-
-impl<'a, 'b> NodeDiff<'a, 'b> {
-    pub fn is_empty(&self) -> bool {
-        self.added_entries.is_empty() && self.removed_entries.is_empty()
-    }
-}
-
-#[derive(Debug, PartialEq)]
-pub struct NodeDiffOwned {
-    added_entries: Vec<EntryOwned>,
-    removed_entries: Vec<EntryOwned>,
-}
-
-impl NodeDiffOwned {
-    pub fn is_empty(&self) -> bool {
-        self.added_entries.is_empty() && self.removed_entries.is_empty()
-    }
-}
-
-impl<'a, 'b> From<NodeDiff<'a, 'b>> for NodeDiffOwned {
-    fn from(from: NodeDiff) -> NodeDiffOwned {
-        NodeDiffOwned {
-            added_entries: from.added_entries.into_iter().map(|n| n.into()).collect(),
-            removed_entries: from.removed_entries.into_iter().map(|n| n.into()).collect(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct Entry<'a, 'b> {
-    key: NibbleSlice<'a>,
-    value: &'b [u8],
-}
-
-impl<'a, 'b> Default for NodeDiff<'a, 'b> {
-    fn default() -> Self {
-        Self {
-            added_entries: vec![],
-            removed_entries: vec![],
-        }
-    }
-}
-
-impl<'a, 'b> From<Entry<'a, 'b>> for EntryOwned {
-    fn from(from: Entry) -> EntryOwned {
-        EntryOwned {
-            key: from.key.into(),
-            value: from.value.to_owned(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct EntryOwned {
-    key: NibbleOwned,
-    value: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct NibbleOwned {
-    pub inner: Vec<u8>,
-}
-
-impl<'a> From<NibbleSlice<'a>> for NibbleOwned {
-    fn from(from: NibbleSlice) -> NibbleOwned {
-        NibbleOwned {
-            inner: from.iter().collect(),
-        }
-    }
-}
-
-pub fn diff_nodes<'a, 'b>(
+pub fn diff_nodes<'a>(
     nibble: NibbleSlice<'a>,
-    old_node: Node<'b>,
-    new_node: Node<'b>,
-) -> NodeDiff<'a, 'b> {
-    let mut diff = NodeDiff::default();
+    old_node: Node<'a>,
+    new_node: Node<'a>,
+) -> NodeDiff<'a, 'a> {
     if old_node == new_node {
-        return diff;
+        return NodeDiff::default();
+    }
+
+    macro_rules! simple_to_simple {
+        ($old_inner_nibble:ident, $old_data:ident, $new_inner_nibble:ident, $new_data:ident) => {
+            NodeDiff {
+                removed_entries: vec![Entry {
+                    key: NibbleSlice::new_composed(&nibble, &$old_inner_nibble),
+                    value: $old_data,
+                }],
+                added_entries: vec![Entry {
+                    key: NibbleSlice::new_composed(&nibble, &$new_inner_nibble),
+                    value: $new_data,
+                }],
+            }
+        };
     }
 
     match (old_node, new_node) {
-        (Node::Branch(_, None), Node::Branch(_, Some(value))) => {
-            diff.added_entries.push(Entry { key: nibble, value });
+        (Node::Empty, new_node) => full_node_to_node_diff(nibble, new_node, true),
+        (old_node, Node::Empty) => full_node_to_node_diff(nibble, old_node, false),
+        (Node::Leaf(old_inner_nibble, old_data), Node::Leaf(new_inner_nibble, new_data)) => {
+            simple_to_simple!(old_inner_nibble, old_data, new_inner_nibble, new_data)
         }
-        _ => {}
+        (Node::Extension(old_inner_nibble, old_data), Node::Leaf(new_inner_nibble, new_data)) => {
+            simple_to_simple!(old_inner_nibble, old_data, new_inner_nibble, new_data)
+        }
+        (Node::Leaf(old_inner_nibble, old_data), Node::Extension(new_inner_nibble, new_data)) => {
+            simple_to_simple!(old_inner_nibble, old_data, new_inner_nibble, new_data)
+        }
+        (
+            Node::Extension(old_inner_nibble, old_data),
+            Node::Extension(new_inner_nibble, new_data),
+        ) => simple_to_simple!(old_inner_nibble, old_data, new_inner_nibble, new_data),
+        (Node::Branch(_, None), Node::Branch(_, Some(value))) => {
+            let mut diff = NodeDiff::default();
+            diff.added_entries.push(Entry { key: nibble, value });
+
+            diff
+        }
+        _ => unimplemented!(),
+    }
+}
+
+fn full_node_to_node_diff<'a>(
+    nibble: NibbleSlice<'a>,
+    node: Node<'a>,
+    added: bool,
+) -> NodeDiff<'a, 'a> {
+    let mut changed_entries = vec![];
+    match node {
+        Node::Leaf(inner_nibble, data) => {
+            changed_entries.push(Entry {
+                key: NibbleSlice::new_composed(&nibble, &inner_nibble),
+                value: data,
+            });
+        }
+        Node::Extension(inner_nibble, data) => {
+            changed_entries.push(Entry {
+                key: NibbleSlice::new_composed(&nibble, &inner_nibble),
+                value: data,
+            });
+        }
+        Node::Branch(children, immediate) => {
+            for child in children.iter().filter_map(|n| *n) {
+                changed_entries.push(Entry {
+                    key: nibble,
+                    value: child,
+                });
+            }
+            if let Some(immediate) = immediate {
+                changed_entries.push(Entry {
+                    key: nibble,
+                    value: immediate,
+                });
+            }
+        }
+        Node::Empty => {}
     }
 
-    diff
+    match added {
+        true => NodeDiff {
+            added_entries: changed_entries,
+            ..NodeDiff::default()
+        },
+        false => NodeDiff {
+            removed_entries: changed_entries,
+            ..NodeDiff::default()
+        },
+    }
 }
 
 #[cfg(test)]
@@ -201,8 +205,8 @@ mod tests {
         assert!(!diff.is_empty());
         assert_eq!(1, diff[0].added_entries.len());
         assert_eq!(
-            crate::EntryOwned {
-                key: crate::NibbleOwned { inner: vec![] },
+            crate::types::EntryOwned {
+                key: crate::types::NibbleOwned { inner: vec![] },
                 value: b"baz".to_vec()
             },
             diff[0].added_entries[0]
